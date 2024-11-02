@@ -6,6 +6,8 @@ from libc.string cimport memset
 from libcpp.vector cimport vector
 from libcpp.utility cimport pair
 import math
+from typing import NamedTuple, Optional
+import enum
 
 __version__ = '0.9.5'
 
@@ -40,12 +42,21 @@ cdef extern from 'jxl/types.h':
         JXL_BIT_DEPTH_CUSTOM
 
     ctypedef struct JxlBitDepth:
-        JxlBitDepthType dtype 'type'
+        JxlBitDepthType type
         uint32_t bits_per_sample
         uint32_t exponent_bits_per_sample
 
     ctypedef char JxlBoxType[4]
 
+class JxlPyBitDepthType(enum.Enum):
+    FROM_PIXEL_FORMAT = JXL_BIT_DEPTH_FROM_PIXEL_FORMAT
+    FROM_CODESTREAM = JXL_BIT_DEPTH_FROM_CODESTREAM
+    CUSTOM = JXL_BIT_DEPTH_CUSTOM
+
+class JxlPyBitDepth(NamedTuple):
+    type: JxlPyBitDepthType = JxlPyBitDepthType.FROM_PIXEL_FORMAT
+    bits_per_sample: uint32_t = 0
+    exponent_bits_per_sample: uint32_t = 0
 
 cdef extern from 'jxl/codestream_header.h':
 
@@ -1022,6 +1033,7 @@ cdef class JXLPyEncoder:
     cdef JxlBasicInfo basic_info
     cdef JxlPixelFormat pixel_format
     cdef JxlColorEncoding color_encoding
+    cdef JxlBitDepth jlx_bit_depth
     cdef size_t num_threads
     cdef int colorspace
 
@@ -1038,6 +1050,9 @@ cdef class JXLPyEncoder:
     # colorspace -> for now only RGB, RGBA, L, LA are supported
     # bit_depth -> bit depth of the image (usually 8 or 16)
     # alpha_bit_depth -> bit depth of the alpha channel, only used when selected colorspace has alpha
+    # frame_bit_depth -> bit depth of the input buffer.
+    #                    Usually you only need to use this if bit_depth is not 8 or 16.
+    #                    Check the docs for JxlEncoderSetFrameBitDepth() for more information.
     # endianness -> can be little, big or native
     # num_threads: 0..n -> leaving 0 (default) will use all available cpu threads,
     #                      setting it to fixed number (t) will use only t threads
@@ -1045,6 +1060,7 @@ cdef class JXLPyEncoder:
     # icc_profile: color profile information to be embedded into image as bytes
     def __init__(self, quality: int, size: tuple, effort: int=7, decoding_speed: int=0,
                  use_container: bool=True, colorspace: str='RGB', bit_depth: int=8, alpha_bit_depth: int=8,
+                 frame_bit_depth: Optional[JxlPyBitDepth] = None,
                  endianness: str='native', num_threads: int=0, icc_profile: bytes=b''):
 
         _check_arg(quality, 'quality', (0, 100))
@@ -1187,6 +1203,14 @@ cdef class JXLPyEncoder:
         if self.status != JXL_ENC_SUCCESS:
             raise JXLPyError('JxlEncoderFrameSettingsSetOption', self.status)
 
+        if isinstance(frame_bit_depth, JxlPyBitDepth):
+            self.jlx_bit_depth = JxlBitDepth(
+                frame_bit_depth.type.value, frame_bit_depth.bits_per_sample, frame_bit_depth.exponent_bits_per_sample
+            )
+            self.status = JxlEncoderSetFrameBitDepth(self.options, &self.jlx_bit_depth)
+            if self.status != JXL_ENC_SUCCESS:
+                raise JXLPyError('JxlEncoderSetFrameBitDepth', self.status)
+
 
     def add_frame(self, input_data: bytes):
 
@@ -1263,13 +1287,18 @@ cdef class JXLPyDecoder(object):
     cdef JxlSignature signature
     cdef JxlBasicInfo basic_info
     cdef JxlPixelFormat pixel_format
+    cdef JxlBitDepth jlx_bit_depth
     cdef size_t num_threads
     cdef size_t n_frames
     cdef bint decoding_finished
 
     cdef vector[uint8_t] icc_profile
 
-    def __init__(self, jxl_data: bytes, keep_orientation: bool=True, num_threads: int=0):
+    # frame_bit_depth -> bit depth of the output buffer.
+    #                    Usually you only need to use this if bit_depth is not 8 or 16.
+    #                    Check the docs for JxlDecoderSetImageOutBitDepth() for more information.
+    def __init__(self, jxl_data: bytes, keep_orientation: bool=True, num_threads: int=0,
+        frame_bit_depth: Optional[JxlPyBitDepth] = None):
         
         self.src = jxl_data
         self.src_len = len(jxl_data)
@@ -1310,6 +1339,13 @@ cdef class JXLPyDecoder(object):
             self.status = JxlDecoderSetKeepOrientation(self.decoder, JXL_TRUE)
             if self.status != JXL_DEC_SUCCESS:
                 raise JXLPyError('JxlDecoderSetKeepOrientation', self.status)
+
+        if isinstance(frame_bit_depth, JxlPyBitDepth):
+            self.jlx_bit_depth = JxlBitDepth(
+                frame_bit_depth.type.value, frame_bit_depth.bits_per_sample, frame_bit_depth.exponent_bits_per_sample
+            )
+        else:
+            self.jlx_bit_depth = JxlBitDepth(JXL_BIT_DEPTH_FROM_PIXEL_FORMAT)
 
         self.n_frames = 0
         self.rewind()
@@ -1490,6 +1526,10 @@ cdef class JXLPyDecoder(object):
                 )
                 if self.status != JXL_DEC_SUCCESS:
                     raise JXLPyError('JxlDecoderSetImageOutBuffer', self.status)
+
+                self.status = JxlDecoderSetImageOutBitDepth(self.decoder, &self.jlx_bit_depth)
+                if self.status != JXL_DEC_SUCCESS:
+                    raise JXLPyError('JxlDecoderSetImageOutBitDepth', self.status)
 
         return data_out.data()[:data_out.size()]
 

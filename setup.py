@@ -34,7 +34,7 @@ setup(name='jxlpy',
       include_package_data=True,
       install_requires=['cython'],
       extras_require={'pillow': ['Pillow']},
-      python_requires='>=3.4',
+      python_requires='>=3.6',
       ext_modules=cythonize([jxlpy_ext]),
       classifiers=[
           'Development Status :: 3 - Alpha',
